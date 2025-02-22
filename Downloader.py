@@ -2,154 +2,186 @@ import yt_dlp
 import shutil
 import sys
 import os
+from concurrent.futures import ThreadPoolExecutor
+
+# Константы
+MAX_WORKERS_PER_SITE = 4  # Максимальное количество потоков для одного сайта (0 = полное распараллеливание)
+DEFAULT_DOWNLOAD_PATH = "F:/G/Download"  # Путь по умолчанию
 
 def check_ffmpeg():
     if not shutil.which("ffmpeg"):
-        print("FFmpeg не найден. Пожалуйста, установите FFmpeg и добавьте его в PATH.")
-        sys.exit(1)
+        print("FFmpeg не найден. Конвертация файлов будет отключена.")
+        return False
+    return True
 
-def download_content(url, output_format, is_playlist=False, batch_mode=False):
-    # Настройки для скачивания
-    ydl_opts = {
-        'format': f'bestvideo+bestaudio/{output_format}' if output_format != "mp3" else 'bestaudio/best',
-        'outtmpl': '%(playlist_title)s/%(title)s.%(ext)s' if is_playlist else '%(title)s.%(ext)s',
-        'noplaylist': not is_playlist,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio' if output_format == "mp3" else 'FFmpegVideoConvertor',
-            'preferredcodec': output_format if output_format != "mp4" else None,
-            'preferredquality': '192' if output_format == "mp3" else None,
-        }] if output_format != "mp4" else [],
-    }
+def clean_youtube_playlist_url(url):
+    """Очищает URL плейлиста YouTube от лишних параметров."""
+    if "youtube.com/playlist" in url or "youtu.be" in url:
+        # Оставляем только основную часть URL плейлиста
+        base_url = url.split('&')[0]
+        return base_url
+    return url
 
+def analyze_url(url):
     try:
-        with yt_dlp.YoutubeDL({'extract_flat': True}) as ydl:
-            # Получаем информацию о контенте без скачивания
-            info_dict = ydl.extract_info(url, download=False)
-            title = info_dict.get('title')
-            playlist_title = info_dict.get('playlist_title', '') if is_playlist else ''
+        with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'entries' in info:
+                return "playlist"
+            elif 'title' in info:
+                return "single_video"
+    except yt_dlp.utils.DownloadError as e:
+        print(f"URL не поддерживается: {url}. Пропускаем...")
+        return None
+    except Exception:
+        pass
+    return None
 
-            if is_playlist and 'entries' in info_dict:
-                total_videos = len(info_dict['entries'])
-                print(f"Обнаружен плейлист: {playlist_title}")
-                print(f"Доступное количество видео: {total_videos}")
-
-                if not batch_mode:
-                    # Запрашиваем диапазон видео только если не в пакетном режиме
-                    while True:
-                        try:
-                            start = int(input(f"Введите начальный номер видео (1-{total_videos}): "))
-                            end = int(input(f"Введите конечный номер видео (1-{total_videos}): "))
-                            if 1 <= start <= total_videos and 1 <= end <= total_videos and start <= end:
-                                break
-                            else:
-                                print(f"Неверный диапазон. Убедитесь, что числа находятся в пределах 1-{total_videos} и start <= end.")
-                        except ValueError:
-                            print("Пожалуйста, введите корректные числа.")
-
-                    print(f"Скачивание видео с {start} по {end}...")
-                    ydl_opts.update({
-                        'playliststart': start,
-                        'playlistend': end,
-                    })
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Начинаем загрузку
-            print(f"Начинаем загрузку в формате {output_format}...")
-            try:
-                info_after_download = ydl.extract_info(url, download=True)
-
-                # Проверяем формат скачанного файла после завершения постобработки
-                if is_playlist and 'entries' in info_after_download:
-                    for entry in info_after_download['entries']:
-                        check_downloaded_file(entry, output_format, is_playlist, playlist_title, batch_mode)
-                else:
-                    check_downloaded_file(info_after_download, output_format, is_playlist, playlist_title, batch_mode)
-            except yt_dlp.utils.DownloadError as e:
-                print(f"Произошла ошибка при скачивании: {e}")
-                return
-
-    except Exception as e:
-        print(f"Произошла ошибка: {e}")
-
-def check_downloaded_file(info, output_format, is_playlist, playlist_title, batch_mode):
-    # Извлекаем название и расширение файла
-    title = info.get('title')
-    ext = info.get('ext')
-
-    if is_playlist:
-        downloaded_file = f"{playlist_title}/{title}.{ext}"
-    else:
-        downloaded_file = f"{title}.{ext}"
-
-    # Проверяем, соответствует ли формат заявленному
-    if ext.lower() != output_format:
-        print(f"Файл '{downloaded_file}' скачался в формате {ext}, а не {output_format}.")
-        if not batch_mode:
-            convert = input("Хотите выполнить конвертацию? (да/нет): ").lower()
-            if convert == "да":
-                check_ffmpeg()  # Убедимся, что FFmpeg установлен
-                if output_format == "mp3":
-                    convert_audio(title, is_playlist, playlist_title)
-                else:
-                    convert_video(title, output_format, is_playlist, playlist_title)
+def get_playlist_range(total_videos):
+    while True:
+        range_input = input("Введите диапазон видео для скачивания (например, 1-3 или 0 для скачивания всех): ")
+        if range_input == "0":
+            return 1, total_videos  # Скачивать все видео
+        try:
+            start, end = map(int, range_input.split('-'))
+            if 1 <= start <= total_videos and 1 <= end <= total_videos and start <= end:
+                return start, end
             else:
-                print("Конвертация отменена.")
-        else:
-            print("Конвертация отключена в пакетном режиме.")
+                print(f"Неверный диапазон. Убедитесь, что числа находятся в пределах 1-{total_videos} и start <= end.")
+        except ValueError:
+            print("Пожалуйста, введите корректный диапазон (например, 1-3 или 0).")
+
+def download_content(url, content_type, is_playlist=False, playlist_range=None):
+    print(f"Начинаем загрузку {'аудио' if content_type == 'audio' else 'видео'}: {url}")
+
+    if content_type == "audio":
+        ydl_opts = {
+            'format': 'bestaudio/best',  # Лучший аудиоформат
+            'outtmpl': f'{DEFAULT_DOWNLOAD_PATH}/%(playlist_title)s/%(title)s.%(ext)s' if is_playlist else f'{DEFAULT_DOWNLOAD_PATH}/%(title)s.%(ext)s',
+            'noplaylist': not is_playlist,
+            'postprocessors': [],  # Отключаем автоматическую конвертацию
+        }
+    elif content_type == "video":
+        ydl_opts = {
+            'format': 'bestvideo+bestaudio/best',  # Лучшее видео с аудио
+            'outtmpl': f'{DEFAULT_DOWNLOAD_PATH}/%(playlist_title)s/%(title)s.%(ext)s' if is_playlist else f'{DEFAULT_DOWNLOAD_PATH}/%(title)s.%(ext)s',
+            'noplaylist': not is_playlist,
+            'postprocessors': [],  # Отключаем автоматическую конвертацию
+        }
+
+    if is_playlist and playlist_range:
+        ydl_opts.update({
+            'playliststart': playlist_range[0],
+            'playlistend': playlist_range[1],
+        })
+
+    try:
+        os.makedirs(DEFAULT_DOWNLOAD_PATH, exist_ok=True)  # Создаем папку для загрузок
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        print(f"Загрузка завершена: {url}")
+    except yt_dlp.utils.DownloadError as e:
+        print(f"Ошибка при скачивании: {e}")
+    except Exception as e:
+        print(f"Произошла непредвиденная ошибка: {e}")
+
+def process_link(url, content_type, playlist_ranges):
+    print("-" * 50)  # Разделитель
+    content_type_detected = analyze_url(url)
+    if content_type_detected == "playlist":
+        print(f"Ссылка '{url}' распознана как плейлист.")
+        playlist_range = playlist_ranges.get(url)  # Получаем диапазон из словаря
+        if playlist_range is None:
+            print(f"Диапазон для плейлиста '{url}' не найден. Скачиваем все видео.")
+            playlist_range = (1, float('inf'))  # По умолчанию скачивать все видео
+        download_content(url, content_type, is_playlist=True, playlist_range=playlist_range)
+    elif content_type_detected == "single_video":
+        print(f"Ссылка '{url}' распознана как одиночное видео.")
+        download_content(url, content_type, is_playlist=False)
     else:
-        print(f"Файл успешно скачан в формате {output_format}: {downloaded_file}")
+        print(f"Не удалось определить тип контента для ссылки: {url}")
+    print("-" * 50)  # Разделитель
 
-def convert_video(video_title, output_format, is_playlist, playlist_title):
-    # Конвертируем видео в выбранный формат
-    input_file = f"{playlist_title}/{video_title}.mp4" if is_playlist else f"{video_title}.mp4"
-    output_file = f"{playlist_title}/{video_title}.{output_format}" if is_playlist else f"{video_title}.{output_format}"
+def process_links_parallel(links, content_type, max_workers_per_site, playlist_ranges):
+    sites = {}
+    for link in links:
+        domain = link.split('/')[2]  # Извлекаем домен (например, youtube.com)
+        if domain not in sites:
+            sites[domain] = []
+        sites[domain].append(link)
 
-    ffmpeg_command = [
-        'ffmpeg',
-        '-i', input_file,
-        '-c:v', 'copy',
-        '-c:a', 'copy',
-        output_file
-    ]
+    with ThreadPoolExecutor(max_workers=max_workers_per_site) as executor:
+        for domain, domain_links in sites.items():
+            print(f"Обрабатываем {len(domain_links)} ссылок для сайта: {domain}")
+            for link in domain_links:
+                executor.submit(process_link, link, content_type, playlist_ranges)
 
+def analyze_downloaded_files():
+    download_folder = DEFAULT_DOWNLOAD_PATH
+    if not os.path.exists(download_folder):
+        print(f"Папка {download_folder} не найдена. Нет файлов для анализа.")
+        return
+
+    files = []
+    for root, _, filenames in os.walk(download_folder):
+        for filename in filenames:
+            files.append(os.path.join(root, filename))
+
+    if not files:
+        print(f"В папке {download_folder} нет файлов для анализа.")
+        return
+
+    print("Обнаруженные файлы:")
+    for file in files:
+        ext = os.path.splitext(file)[1][1:].lower()  # Получаем расширение файла
+        print(f"- {file} ({ext})")
+
+    convert = input("Хотите выполнить конвертацию? (да/нет): ").lower()
+    if convert == "да":
+        supported_formats = ["mp3", "mp4", "m4a", "wav", "flac", "avi", "mkv"]
+        print("Доступные форматы для конвертации:")
+        for i, fmt in enumerate(supported_formats, 1):
+            print(f"{i}. {fmt}")
+        try:
+            choice = int(input("Введите номер формата для конвертации: "))
+            target_format = supported_formats[choice - 1]
+        except (ValueError, IndexError):
+            print("Неверный выбор. Конвертация отменена.")
+            return
+
+        if not check_ffmpeg():
+            print("FFmpeg не найден. Конвертация невозможна.")
+            return
+
+        for file in files:
+            convert_file(file, target_format)
+            os.remove(file)  # Удаляем оригинальный файл после конвертации
+    else:
+        print("Конвертация отменена.")
+
+def convert_file(file, output_format):
     try:
         import subprocess
-        print(f"Выполняем конвертацию в формат {output_format}...")
+        output_file = os.path.splitext(file)[0] + f".{output_format}"
+        ffmpeg_command = [
+            'ffmpeg',
+            '-i', file,
+            '-c:v', 'copy' if output_format not in ["mp3", "wav", "flac"] else 'libmp3lame',
+            '-c:a', 'copy' if output_format not in ["mp3", "wav", "flac"] else 'libmp3lame',
+            output_file
+        ]
+        print(f"Выполняем конвертацию файла: {file}")
         subprocess.run(ffmpeg_command, check=True)
         print(f"Конвертация завершена: {output_file}")
     except Exception as e:
-        print(f"Ошибка при конвертации: {e}")
+        print(f"Ошибка при конвертации файла {file}: {e}")
 
-def convert_audio(audio_title, is_playlist, playlist_title):
-    # Конвертируем аудио в MP3
-    input_file = f"{playlist_title}/{audio_title}.webm" if is_playlist else f"{audio_title}.webm"
-    output_file = f"{playlist_title}/{audio_title}.mp3" if is_playlist else f"{audio_title}.mp3"
-
-    ffmpeg_command = [
-        'ffmpeg',
-        '-i', input_file,
-        '-vn',                         # Игнорируем видео
-        '-acodec', 'libmp3lame',       # Кодек MP3
-        '-q:a', '2',                   # Качество (0 - лучшее, 9 - худшее)
-        output_file
-    ]
-
-    try:
-        import subprocess
-        print("Выполняем конвертацию аудио в MP3...")
-        subprocess.run(ffmpeg_command, check=True)
-        print(f"Конвертация завершена: {output_file}")
-    except Exception as e:
-        print(f"Ошибка при конвертации: {e}")
-
-def process_links_from_file(file_path, output_format, is_playlist=False):
-    # Читаем ссылки из текстового файла
+def process_links_from_file(file_path, content_type):
     while True:
         try:
             with open(file_path, 'r', encoding='utf-8') as file:
                 links = file.read().splitlines()
-                # Убираем всё после "?" и пустые строки
-                links = [link.split('?')[0].strip() for link in links if link.strip()]
+                links = [clean_youtube_playlist_url(link.strip()) for link in links if link.strip()]
             if not links:
                 print("Файл пустой. Попробуйте еще раз.")
                 continue
@@ -161,51 +193,52 @@ def process_links_from_file(file_path, output_format, is_playlist=False):
             print(f"Ошибка при чтении файла: {e}")
             file_path = input("Введите путь к текстовому файлу с ссылками: ")
 
-    # Определяем, сколько ссылок в файле
-    if len(links) == 1:
-        print("Обнаружена одна ссылка. Запускаем стандартный режим.")
-        download_content(links[0], output_format, is_playlist=is_playlist, batch_mode=False)
-    else:
-        print(f"Обнаружено {len(links)} ссылок. Запускаем пакетный режим.")
-        for i, link in enumerate(links, start=1):
-            print(f"\nОбработка ссылки {i}/{len(links)}: {link}")
-            download_content(link, output_format, is_playlist=is_playlist, batch_mode=True)
+    print(f"Обнаружено {len(links)} ссылок.")
+    playlist_ranges = {}
+    for link in links:
+        if analyze_url(link) == "playlist":
+            print(f"В файле обнаружен плейлист: {link}")
+            with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True}) as ydl:
+                info = ydl.extract_info(link, download=False)
+                total_videos = len(info['entries'])
+                print(f"Обнаружен плейлист с {total_videos} видео.")
+                playlist_ranges[link] = get_playlist_range(total_videos)
 
+    process_links_parallel(links, content_type, MAX_WORKERS_PER_SITE, playlist_ranges)
+    analyze_downloaded_files()
 
 if __name__ == "__main__":
-    # Диалог для выбора режима
     print("Что вы хотите скачать?")
-    print("1. Одиночное видео или аудио")
-    print("2. Весь плейлист или часть плейлиста")
-    choice = input("Введите номер (1 или 2): ")
+    print("1. Аудио")
+    print("2. Видео")
+    content_choice = input("Введите номер (1 или 2): ")
 
-    # Запрашиваем источник ссылок
+    if content_choice == "1":
+        content_type = "audio"
+    elif content_choice == "2":
+        content_type = "video"
+    else:
+        print("Неверный выбор. Пожалуйста, введите 1 или 2.")
+        sys.exit()
+
     print("Откуда взять ссылки?")
     print("1. Ввести вручную")
     print("2. Считать из текстового файла (main.txt)")
     source_choice = input("Введите номер (1 или 2): ")
 
-    # Запрашиваем формат
-    print("Выберите формат (mp3, mkv, avi, hevc, mp4): ")
-    output_format = input().lower()
-
     if source_choice == "1":
-        url = input("Введите URL видео или плейлиста: ").split('?')[0].strip()  # Убираем всё после "?" и пустые строки
-        urls = [url]  # Одна ссылка
+        url = input("Введите URL видео или плейлиста: ").strip()
+        playlist_ranges = {}
+        if analyze_url(url) == "playlist":
+            with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                total_videos = len(info['entries'])
+                print(f"Обнаружен плейлист с {total_videos} видео.")
+                playlist_ranges[url] = get_playlist_range(total_videos)
+        process_link(clean_youtube_playlist_url(url), content_type, playlist_ranges)
+        analyze_downloaded_files()
     elif source_choice == "2":
-        file_path = "main.txt"  # Фиксированный путь к файлу
-        process_links_from_file(file_path, output_format=output_format, is_playlist=(choice == "2"))
-        sys.exit(0)  # Завершаем выполнение после обработки файла
-    else:
-        print("Неверный выбор. Пожалуйста, введите 1 или 2.")
-        sys.exit(1)
-
-    # Выбор режима
-    if choice == "1":
-        print("Скачивание одиночного видео или аудио...")
-        download_content(urls[0], output_format, is_playlist=False)
-    elif choice == "2":
-        print("Скачивание плейлиста или части плейлиста...")
-        download_content(urls[0], output_format, is_playlist=True)
+        file_path = "main.txt"
+        process_links_from_file(file_path, content_type)
     else:
         print("Неверный выбор. Пожалуйста, введите 1 или 2.")
