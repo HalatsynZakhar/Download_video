@@ -1,15 +1,76 @@
 import os
 from pathlib import Path
 from datetime import datetime
+from PIL import Image
+from PIL.ExifTags import TAGS
+import PyPDF2
+import shutil
 
-def organize_files(source_directory, result_directory, max_files_per_folder=5000, start_number=None):
+
+def remove_metadata(file_path):
+    """
+    Удаляет метаданные из файлов различных форматов.
+
+    :param file_path: Path объект файла
+    :return: True если метаданные успешно удалены, False в противном случае
+    """
+    try:
+        suffix = file_path.suffix.lower()
+
+        # Обработка изображений (JPEG, PNG, TIFF, BMP, WEBP)
+        if suffix in ['.jpg', '.jpeg', '.png', '.tiff', '.bmp', '.webp']:
+            img = Image.open(file_path)
+
+            # Создаем новое изображение без метаданных
+            data = list(img.getdata())
+            image_without_exif = Image.new(img.mode, img.size)
+            image_without_exif.putdata(data)
+
+            # Сохраняем без метаданных
+            image_without_exif.save(file_path)
+            return True
+
+        # Обработка PDF файлов
+        elif suffix == '.pdf':
+            # Создаем временный файл
+            temp_path = file_path.with_suffix('.tmp')
+
+            with open(file_path, 'rb') as input_file:
+                reader = PyPDF2.PdfReader(input_file)
+                writer = PyPDF2.PdfWriter()
+
+                # Копируем страницы без метаданных
+                for page in reader.pages:
+                    writer.add_page(page)
+
+                # Сохраняем в временный файл
+                with open(temp_path, 'wb') as output_file:
+                    writer.write(output_file)
+
+            # Заменяем оригинальный файл
+            shutil.move(temp_path, file_path)
+            return True
+
+        # Для других типов файлов можно добавить обработку
+        else:
+            return False
+
+    except Exception as e:
+        print(f"Ошибка удаления метаданных из {file_path.name}: {e}")
+        return False
+
+
+def organize_files(source_directory, result_directory, max_files_per_folder=5000,
+                   start_number=None, remove_meta=True):
     """
     Организует файлы из "свалки" в упорядоченные папки с указанным лимитом файлов на папку.
+    Опционально удаляет метаданные из файлов.
 
     :param source_directory: Путь к "свалке" файлов.
     :param result_directory: Путь к папке с результатом.
     :param max_files_per_folder: Максимальное количество файлов на одну папку.
     :param start_number: Начальное число для нумерации файлов. Если None, определяется автоматически.
+    :param remove_meta: Удалять ли метаданные из файлов (по умолчанию True).
     """
     try:
         # Конвертируем пути в Path-объекты
@@ -40,7 +101,8 @@ def organize_files(source_directory, result_directory, max_files_per_folder=5000
             if existing_folders:
                 last_folder = existing_folders[-1]
                 last_file = max(
-                    (int(f.stem) for f in last_folder.iterdir() if f.is_file() and f.stem.isdigit()),
+                    (int(f.stem.split('_')[0]) for f in last_folder.iterdir()
+                     if f.is_file() and f.stem.split('_')[0].isdigit()),
                     default=0
                 )
                 start_number = last_file + 1
@@ -50,6 +112,7 @@ def organize_files(source_directory, result_directory, max_files_per_folder=5000
         # Счетчики
         file_counter = start_number
         rename_counter = 0
+        metadata_removed_count = 0
 
         # Работа с последней папкой
         existing_folders = sorted(result.glob("*/"), key=lambda f: f.name)
@@ -90,6 +153,11 @@ def organize_files(source_directory, result_directory, max_files_per_folder=5000
                 print(f"Ошибка перемещения файла {file}: {e}")
                 continue  # Продолжаем работу даже при ошибке
 
+            # Удаляем метаданные, если требуется
+            if remove_meta:
+                if remove_metadata(new_path):
+                    metadata_removed_count += 1
+
             # Увеличиваем счетчик файлов
             file_counter += 1
             rename_counter += 1
@@ -116,6 +184,8 @@ def organize_files(source_directory, result_directory, max_files_per_folder=5000
 
         print(f"Обработка завершена. Всего обработано файлов: {file_counter - start_number}")
         print(f"Создано папок: {folder_counter}")
+        if remove_meta:
+            print(f"Метаданные удалены из {metadata_removed_count} файлов")
 
     except Exception as e:
         print(f"Критическая ошибка: {e}")
@@ -127,4 +197,5 @@ result_directory = "F:\\м"
 max_files_per_folder = 5000
 start_number = None  # Автоматически определить стартовый номер
 
-organize_files(source_directory, result_directory, max_files_per_folder, start_number)
+# remove_meta=True для удаления метаданных, False для отключения этой функции
+organize_files(source_directory, result_directory, max_files_per_folder, start_number, remove_meta=True)
