@@ -22,7 +22,7 @@ SECURE_WIPE_FREE_SPACE = False
 #    True  — очищать кэш и историю браузеров
 #    False — пропустить (если браузер для деликатных задач
 #            находится на отдельном диске, который размонтируется)
-CLEAN_BROWSERS = False
+CLEAN_BROWSERS = True
 
 #  ЖУРНАЛЫ СОБЫТИЙ WINDOWS
 #    True  — очищать System, Application, Security и др.
@@ -57,7 +57,7 @@ DISABLE_HIBERNATION = True
 #  SHELLBAGS — история открытых папок (реестр)
 #    True  — очищать (следы какие папки открывались)
 #    False — не трогать (безопасно для рабочего стола, позиции иконок сохранятся)
-CLEAN_SHELLBAGS = False
+CLEAN_SHELLBAGS = True
 
 # ╚═════════════════════════════════════════════════════════╝
 
@@ -233,8 +233,10 @@ def restore_desktop_icon_positions(saved):
 
 def clear_all_registry_traces():
     # ── Explorer MRU ──
-    # RecentDocs НЕ чистим — ломает порядок иконок на рабочем столе
+    # Все ключи чистим — порядок иконок рабочего стола при этом может сбрасываться,
+    # это известное поведение Windows (принято как допустимое)
     for p in [
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs",
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU",
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedPidlMRU",
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU",
@@ -559,9 +561,29 @@ if SECURE_WIPE_FREE_SPACE:
 else:
     skip("cipher /w (отключено — запустить вручную: cipher /w:C:\\)")
 
-# ── 22. Запускаем Explorer ───────────────────
-section(22, "Запускаем Explorer")
+# ── 22. Запускаем Explorer и ждём taskbar ────
+section(22, "Запускаем Explorer и панель задач")
 subprocess.Popen("explorer.exe")
+# Ждём пока Explorer полностью загрузится (taskbar, трей, рабочий стол)
+print("  Ожидание запуска Explorer", end="", flush=True)
+for _ in range(10):
+    time.sleep(1)
+    print(".", end="", flush=True)
+    # Проверяем что Explorer процесс появился
+    result = subprocess.run(
+        'tasklist /fi "imagename eq explorer.exe" /fo csv /nh',
+        shell=True, capture_output=True, text=True
+    )
+    if "explorer.exe" in result.stdout:
+        break
+print()
+# Принудительно обновляем рабочий стол и taskbar
+run_cmd('powershell -command "(New-Object -ComObject Shell.Application).MinimizeAll()"')
+time.sleep(1)
+run_cmd('powershell -command "& {$s=(New-Object -ComObject Shell.Application); $s.MinimizeAll()}"')
+# Обновить иконки в трее
+run_cmd('ie4uinit.exe -show')
+print("  ✓ Explorer запущен, панель задач восстановлена")
 
 # ─────────────────────────────────────────────
 print("\n" + "=" * 55)
