@@ -22,7 +22,7 @@ SECURE_WIPE_FREE_SPACE = False
 #    True  — очищать кэш и историю браузеров
 #    False — пропустить (если браузер для деликатных задач
 #            находится на отдельном диске, который размонтируется)
-CLEAN_BROWSERS = True
+CLEAN_BROWSERS = False
 
 #  ЖУРНАЛЫ СОБЫТИЙ WINDOWS
 #    True  — очищать System, Application, Security и др.
@@ -53,6 +53,11 @@ CLEAN_TELEMETRY = True
 #    True  — отключить гибернацию и удалить hiberfil.sys
 #    False — не трогать
 DISABLE_HIBERNATION = True
+
+#  SHELLBAGS — история открытых папок (реестр)
+#    True  — очищать (следы какие папки открывались)
+#    False — не трогать (безопасно для рабочего стола, позиции иконок сохранятся)
+CLEAN_SHELLBAGS = False
 
 # ╚═════════════════════════════════════════════════════════╝
 
@@ -185,10 +190,51 @@ def set_reg_value(hive, key_path, name, reg_type, value):
     except:
         pass
 
+def save_desktop_icon_positions():
+    """Сохраняем позиции иконок рабочего стола из реестра"""
+    saved = {}
+    desktop_keys = [
+        r"Software\Microsoft\Windows\Shell\Bags\1\Desktop",
+        r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\1\Desktop",
+    ]
+    for key_path in desktop_keys:
+        try:
+            key = winreg.OpenKey(HKCU, key_path, 0, winreg.KEY_READ)
+            values = {}
+            i = 0
+            while True:
+                try:
+                    name, data, dtype = winreg.EnumValue(key, i)
+                    values[name] = (data, dtype)
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+            if values:
+                saved[key_path] = values
+        except:
+            pass
+    return saved
+
+def restore_desktop_icon_positions(saved):
+    """Восстанавливаем позиции иконок рабочего стола"""
+    for key_path, values in saved.items():
+        try:
+            key = winreg.CreateKey(HKCU, key_path)
+            for name, (data, dtype) in values.items():
+                try:
+                    winreg.SetValueEx(key, name, 0, dtype, data)
+                except:
+                    pass
+            winreg.CloseKey(key)
+        except:
+            pass
+
+
 def clear_all_registry_traces():
     # ── Explorer MRU ──
+    # RecentDocs НЕ чистим — ломает порядок иконок на рабочем столе
     for p in [
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs",
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU",
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedPidlMRU",
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU",
@@ -209,15 +255,16 @@ def clear_all_registry_traces():
         r"Software\Microsoft\Office\Common\Open Find")
 
     # ── ShellBags — история открытых папок ──
-    # Очищаем только записи о папках, пропускаем рабочий стол (Desktop = {Desktop GUID})
-    # Простейший безопасный вариант — чистить только BagMRU верхнего уровня,
-    # не трогая Bags (там хранятся позиции иконок рабочего стола)
-    for p in [
-        r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU",
-        r"Software\Microsoft\Windows\Shell\BagMRU",
-    ]:
-        clear_reg_key_and_subkeys(HKCU, p)
-    # Bags не трогаем — там позиции иконок рабочего стола
+    # Внимание: очистка ломает позиции иконок рабочего стола!
+    # Управляется через CLEAN_SHELLBAGS в настройках сверху.
+    if CLEAN_SHELLBAGS:
+        for p in [
+            r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags",
+            r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU",
+            r"Software\Microsoft\Windows\Shell\Bags",
+            r"Software\Microsoft\Windows\Shell\BagMRU",
+        ]:
+            clear_reg_key_and_subkeys(HKCU, p)
 
     # ── UserAssist — история запуска программ ──
     clear_reg_key_and_subkeys(HKCU,
@@ -457,8 +504,10 @@ else:
 
 # ── 15. Реестр ────────────────────────────────
 section(15, "Реестр: MRU, ShellBags, UserAssist, Timeline")
+desktop_positions = save_desktop_icon_positions()
 clear_all_registry_traces()
-print("  ✓ Все ключи реестра очищены")
+restore_desktop_icon_positions(desktop_positions)
+print("  ✓ Все ключи реестра очищены, позиции иконок сохранены")
 
 # ── 16. Журналы событий ───────────────────────
 section(16, "Журналы событий Windows", CLEAN_EVENT_LOGS)
@@ -523,10 +572,10 @@ modules = [
     ("Эскизы и иконки",         True),
     ("LNK-ярлыки / Recent",     True),
     ("Office кэш и MRU",        True),
-    ("ShellBags / UserAssist",  True),
+    ("UserAssist / реестр MRU", True),
+    ("ShellBags (папки)",       CLEAN_SHELLBAGS),
     ("Windows Timeline",        True),
     ("TEMP папки",              True),
-    ("Реестр MRU",              True),
     ("Prefetch",                CLEAN_PREFETCH),
     ("Браузеры",                CLEAN_BROWSERS),
     ("GPU кэш",                 CLEAN_GPU_CACHE),
