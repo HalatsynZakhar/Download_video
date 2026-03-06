@@ -795,5 +795,3 @@ for name, enabled in modules:
     mark = "✓" if enabled else "○"
     print(f"  {mark} {name}")
 print("=" * 55)
-
-input("\nНажмите Enter для выхода...")
